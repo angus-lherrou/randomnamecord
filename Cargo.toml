@@ -1,6 +1,6 @@
 [package]
 name = "randomnamecord"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Discord app for random BehindTheName names"
@@ -11,7 +11,7 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-behindthename = "0.2.8"
+behindthename = "0.2.9"
 tracing = "0.1.29"
 tracing-subscriber = "0.3.6"
 dotenv = "0.15"
