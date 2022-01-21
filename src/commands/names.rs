@@ -2,16 +2,17 @@ use std::env;
 use std::thread::sleep;
 use std::time::Duration;
 
-use serenity::framework::standard::{macros::command, ArgError::*, Args, CommandResult};
-use serenity::model::prelude::*;
-use serenity::prelude::*;
-
+use behindthename::{lookup, random, session::Session, types::RateLimited::*, types::*};
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
+use reqwest::Client;
+use serenity::framework::standard::{
+    macros::command, ArgError::*, Args, CommandError, CommandResult,
+};
+use serenity::{builder::CreateMessage, model::prelude::*, prelude::*};
+use tracing::error;
 
-use behindthename::{lookup, random, session::Session, types::RateLimited::*, types::*};
-
-use core::result::Result;  // satisfy IntelliJ's erroneous type checking
+use core::result::Result; // satisfy IntelliJ's erroneous type checking
 
 struct Name {
     first_name: String,
@@ -66,7 +67,7 @@ fn _name(mut args: Args) -> Result<Name, String> {
         Allowed(_) => Err("At first name request: parsing issue".into()),
         Limited(l) => Err(format!("At first name request: {:?}", l)),
         Governed(_, _) => Err("At first name request: governed".into()),
-        Error(e) => Err(format!("At first name request: {}", e))
+        Error(e) => Err(format!("At first name request: {}", e)),
     }?;
 
     sleep(Duration::from_millis(550));
@@ -76,11 +77,12 @@ fn _name(mut args: Args) -> Result<Name, String> {
         Allowed(JsonResponse::NameDetails(JsonNameDetails(details))) => details
             .into_iter()
             .next()
-            .and_then(|first| first.usages.into_iter().choose(&mut thread_rng())).ok_or("No Usage".into()),
+            .and_then(|first| first.usages.into_iter().choose(&mut thread_rng()))
+            .ok_or_else(|| "No Usage".into()),
         Allowed(_) => Err("At usage request: parsing issue".into()),
         Limited(l) => Err(format!("At usage request: {:?}", l)),
         Governed(_, _) => Err("At usage request: governed".into()),
-        Error(e) => Err(format!("At usage request: {}", e))
+        Error(e) => Err(format!("At usage request: {}", e)),
     };
 
     sleep(Duration::from_millis(550));
@@ -103,7 +105,10 @@ fn _name(mut args: Args) -> Result<Name, String> {
         }
     });
 
-    Ok(Name { first_name, last_name_result })
+    Ok(Name {
+        first_name,
+        last_name_result,
+    })
 }
 
 fn no_last_name(err: String) -> String {
@@ -118,12 +123,19 @@ This name is a mononym. Pretend you're Cher. Or Zeus.
 pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     let typing = msg.channel_id.start_typing(&ctx.http)?;
 
-    let Name { first_name, last_name_result } = tokio::task::spawn_blocking(move || _name(args)).await??;
+    let Name {
+        first_name,
+        last_name_result,
+    } = tokio::task::spawn_blocking(move || _name(args)).await??;
 
-    let full_name = format!("{} {}", first_name.clone(), match last_name_result.clone() {
-        Ok(last_name) => last_name,
-        Err(error) => no_last_name(error)
-    });
+    let full_name = format!(
+        "{} {}",
+        first_name.clone(),
+        match last_name_result.clone() {
+            Ok(last_name) => last_name,
+            Err(error) => no_last_name(error),
+        }
+    );
 
     typing.stop();
 
@@ -149,4 +161,150 @@ pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     }
 
     Ok(())
+}
+
+pub async fn _about<'a>(
+    ctx: &'a Context,
+    msg: &'a Message,
+    args: Args,
+) -> Result<CreateMessage<'a>, CommandError> {
+    let nick_opt = msg.author_nick(&ctx.http).await;
+    let raw_args = args.raw().collect::<Vec<&str>>();
+    let names = if !raw_args.is_empty() {
+        raw_args
+    } else if let Some(nick) = &nick_opt {
+        nick.split_whitespace().collect()
+    } else {
+        vec![]
+    };
+
+    let clx = Client::new();
+
+    match names.len() {
+        0 => {
+            let mut m = CreateMessage::default();
+            Ok(m.content("No name found").to_owned())
+        }
+        1 => {
+            let first = names.first().unwrap();
+            let url = first_name_url(first);
+            let url_opt = clx
+                .head(&url)
+                .send()
+                .await
+                .map_err(|e| format!("1: {:?}, {:?}, {}", &e, e.url(), &url))?
+                .status()
+                .is_success()
+                .then(|| url);
+            let mut m = CreateMessage::default();
+            Ok(match url_opt {
+                Some(url) => m.content(&first).embed(|e| {
+                    e.title("BehindTheName")
+                        .field("First Name", hyperlink(first, &url), true)
+                }),
+                None => m.content(format!("Name {} not found.", first)),
+            }
+            .to_owned())
+        }
+        _ => {
+            let last = names.last().unwrap();
+            let mut urls: Vec<Option<String>> = vec![];
+            for name in (&names[..names.len() - 1]).iter() {
+                let url = first_name_url(name);
+                let status = clx
+                    .head(&url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("2: {:?}, {:?}, {}", &e, e.url(), &url))?
+                    .status();
+                urls.push(status.is_success().then(|| url));
+            }
+
+            let last_url = last_name_url(last);
+            let last_url_opt = clx
+                .head(&last_url)
+                .send()
+                .await
+                .map_err(|e| format!("3: {:?}, {:?}, {}", &e, e.url(), &last_url))?
+                .status()
+                .is_success()
+                .then(|| last_url)
+                .or(async {
+                    let last_first_url = first_name_url(last);
+                    clx.head(&last_first_url)
+                        .send()
+                        .await
+                        .ok()?
+                        .status()
+                        .is_success()
+                        .then(|| last_first_url)
+                }
+                .await);
+
+            urls.push(last_url_opt);
+
+            let names_and_urls = (&names).iter().zip(&urls);
+
+            let mut final_urls: Vec<(&str, &String)> = names_and_urls
+                .filter_map(|(n, u)| u.as_ref().map(|v| (*n, v)))
+                .collect();
+
+            match final_urls.len() {
+                0 => {
+                    let mut m = CreateMessage::default();
+                    Ok(m.content("No names found.").to_owned())
+                }
+                1 => {
+                    let mut m = CreateMessage::default();
+                    let (name, url) = final_urls.pop().unwrap();
+                    Ok(m.content(names.join(" "))
+                        .embed(|e| {
+                            e.title("BehindTheName")
+                                .field("First Name", hyperlink(name, url), true)
+                        })
+                        .to_owned())
+                }
+                _ => {
+                    let mut m = CreateMessage::default();
+                    Ok(m.content(names.join(" "))
+                        .embed(|e| {
+                            let (last_name, last_url) = final_urls.pop().unwrap();
+
+                            let mut url_iter = final_urls.into_iter();
+                            let (first_name, first_url) = url_iter.next().unwrap();
+                            e.title("BehindTheName").field(
+                                "First Name",
+                                hyperlink(first_name, first_url),
+                                true,
+                            );
+
+                            for (name, url) in url_iter {
+                                e.field("Middle Name", hyperlink(name, url), true);
+                            }
+
+                            e.field("Last Name", hyperlink(last_name, last_url), true);
+                            e
+                        })
+                        .to_owned())
+                }
+            }
+        }
+    }
+}
+
+#[command]
+pub async fn about(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
+    let typing = msg.channel_id.start_typing(&ctx.http)?;
+    let r = _about(ctx, msg, args).await;
+    typing.stop();
+    match r {
+        Ok(mut m) => {
+            msg.channel_id.send_message(&ctx.http, |_| &mut m).await?;
+            Ok(())
+        }
+        Err(e) => {
+            error!("{:?}", e);
+            Ok(())
+        }
+    }
 }
