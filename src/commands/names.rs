@@ -15,15 +15,33 @@ use core::result::Result;  // satisfy IntelliJ's erroneous type checking
 
 struct Name {
     first_name: String,
-    last_name_result: Result<String, String>
+    last_name_result: Result<String, String>,
 }
 
-fn last_name_url(last_name: &String) -> String {
-    format!("[{}](https://surnames.behindthename.com/name/{})", &last_name, &last_name.to_lowercase())
+fn hyperlink(title: &str, url: &str) -> String {
+    format!("[{}]({})", title, url)
 }
 
-fn first_name_url(first_name: &String) -> String {
-    format!("[{}](https://www.behindthename.com/name/{})", &first_name, &first_name.to_lowercase())
+fn first_name_url(first_name: &str) -> String {
+    format!(
+        "https://www.behindthename.com/name/{}",
+        first_name.to_lowercase()
+    )
+}
+
+fn last_name_url(last_name: &str) -> String {
+    format!(
+        "https://surnames.behindthename.com/name/{}",
+        last_name.to_lowercase()
+    )
+}
+
+fn first_name_hyperlink(first_name: &str) -> String {
+    hyperlink(first_name, &first_name_url(first_name))
+}
+
+fn last_name_hyperlink(last_name: &str) -> String {
+    hyperlink(last_name, &last_name_url(last_name))
 }
 
 fn _name(mut args: Args) -> Result<Name, String> {
@@ -67,26 +85,23 @@ fn _name(mut args: Args) -> Result<Name, String> {
 
     sleep(Duration::from_millis(550));
 
-    let last_name_result = usage
-        .and_then(|u| {
-            let last_name_gender = match gender {
-                Gender::Any => u.usage_gender,
-                _ => gender,
-            };
-            let last_name_request = random::random_with_params(
-                last_name_gender,
-                Some(&*u.usage_code),
-                Some(1),
-                true,
-            );
-            match session.request(last_name_request) {
-                Allowed(JsonResponse::NameList(JsonNameList { names })) => Ok(names.last().unwrap().to_owned()),
-                Allowed(_) => Err("At last name request: parsing error".into()),
-                Limited(l) => Err(format!("At last name request for usage {:?}: {:?}", u, l)),
-                Governed(_, _) => Err("At last name request: governed".into()),
-                Error(e) => Err(format!("At last name request: {}", e))
+    let last_name_result = usage.and_then(|u| {
+        let last_name_gender = match gender {
+            Gender::Any => u.usage_gender,
+            _ => gender,
+        };
+        let last_name_request =
+            random::random_with_params(last_name_gender, Some(&*u.usage_code), Some(1), true);
+        match session.request(last_name_request) {
+            Allowed(JsonResponse::NameList(JsonNameList { names })) => {
+                Ok(names.last().unwrap().to_owned())
             }
-        });
+            Allowed(_) => Err("At last name request: parsing error".into()),
+            Limited(l) => Err(format!("At last name request for usage {:?}: {:?}", u, l)),
+            Governed(_, _) => Err("At last name request: governed".into()),
+            Error(e) => Err(format!("At last name request: {}", e)),
+        }
+    });
 
     Ok(Name { first_name, last_name_result })
 }
@@ -112,20 +127,23 @@ pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
 
     typing.stop();
 
-    if let Err(e) = msg.channel_id.send_message(
-        &ctx.http,
-        |m| {
-            m.content(full_name)
-                .embed(|e| {
-                    e.title("BehindTheName")
-                        .field("First Name", first_name_url(&first_name), true);
-                    if let Ok(last_name) = last_name_result {
-                        e.field("Last Name", last_name_url(&last_name), true);
-                    }
-                    e
-                })
-        }
-    ).await {
+    if let Err(e) = msg
+        .channel_id
+        .send_message(&ctx.http, |m| {
+            m.content(full_name).embed(|e| {
+                e.title("BehindTheName").field(
+                    "First Name",
+                    first_name_hyperlink(&first_name),
+                    true,
+                );
+                if let Ok(last_name) = last_name_result {
+                    e.field("Last Name", last_name_hyperlink(&last_name), true);
+                }
+                e
+            })
+        })
+        .await
+    {
         msg.channel_id.say(&ctx.http, format!("{}", &e)).await?;
         Err(e)?
     }
