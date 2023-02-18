@@ -82,9 +82,9 @@ fn _name(mut args: Args) -> Result<Name, String> {
             .flat_map(|item| item.usages)
             .collect::<Vec<_>>()),
         Allowed(_) => Err("At usage request: parsing issue".into()),
-        Limited(l) => Err(format!("At usage request: {:?}", l)),
+        Failed(e) => Err(format!("At usage request: {:?}", e)),
         Governed(_, _) => Err("At usage request: governed".into()),
-        Error(e) => Err(format!("At usage request: {}", e)),
+        ReqwestError(e) => Err(format!("At usage request: {}", e)),
     };
 
     let possible_usages_shuffled = possible_usages.map(|mut usages| {
@@ -94,7 +94,7 @@ fn _name(mut args: Args) -> Result<Name, String> {
 
     let last_name_result = possible_usages_shuffled.and_then(|usages| {
         let mut errs_acc = vec![];
-        let mut result = Err("No Usage".into());
+        let mut result = Err(format!("{} Usages", usages.len()));
         for usage in usages {
             sleep(Duration::from_millis(550));
 
@@ -110,23 +110,21 @@ fn _name(mut args: Args) -> Result<Name, String> {
             );
             let matched = match session.request(last_name_request) {
                 Allowed(JsonResponse::NameList(JsonNameList { names })) => {
-                    Ok(Ok(names.last().unwrap().to_owned()))
+                    Ok(names.last().unwrap().to_owned())
                 }
                 Allowed(_) => Err("At last name request: parsing error".into()),
-                Limited(NotAvailable { error_code: 60, .. }) => Ok(Err(())),
-                Limited(l) => Err(format!(
+                Failed(e) => Err(format!(
                     "At last name request for usage {:?}: {:?}",
-                    usage, l
+                    usage, e
                 )),
                 Governed(_, _) => Err("At last name request: governed".into()),
-                Error(e) => Err(format!("At last name request: {}", e)),
+                ReqwestError(e) => Err(format!("At last name request: {}", e)),
             };
             match matched {
-                Ok(Ok(name)) => {
+                Ok(name) => {
                     result = Ok(name);
                     break;
                 }
-                Ok(Err(())) => continue,
                 Err(e) => errs_acc.push(e),
             }
         }
