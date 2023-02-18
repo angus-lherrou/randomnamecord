@@ -12,18 +12,13 @@ readme = "README.md"
 
 [dependencies]
 behindthename = "0.2.9"
-tracing = "0.1.29"
-tracing-subscriber = "0.3.6"
+tracing = "0.1.37"
+tracing-subscriber = "0.3.16"
 dotenv = "0.15"
-serde = { version = "1.0.130", features = ["derive"] }
+serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.68"
-rand = "0.8.4"
-reqwest = "0.11.6"
-
-[dependencies.serenity]
-version = "0.10"
-features = ["framework", "standard_framework"]
-
-[dependencies.tokio]
-version = "1.15"
-features = ["signal"]
+rand = "0.8.5"
+reqwest = "0.11.14"
+clap = { version = "4.1.6", features = ["derive"] }
+tokio = { version = "1.15", features = ["signal"] }
+serenity = { version = "0.10", features = ["framework", "standard_framework"] }
