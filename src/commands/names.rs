@@ -161,45 +161,59 @@ This name is a mononym. Pretend you're Cher. Or Zeus.
 ||{}||", err)
 }
 
+fn an_error_occurred(err: String) -> String {
+    format!(
+        "An error occurred.
+
+||{}||",
+        err
+    )
+}
+
 #[command]
 pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     let typing = msg.channel_id.start_typing(&ctx.http)?;
 
-    let Name {
-        first_name,
-        last_name_result,
-    } = tokio::task::spawn_blocking(move || _name(args)).await??;
-
-    let full_name = format!(
-        "{} {}",
-        first_name.clone(),
-        match last_name_result.clone() {
-            Ok(last_name) => last_name,
-            Err(error) => no_last_name(error),
-        }
-    );
+    let name = tokio::task::spawn_blocking(move || _name(args)).await?;
 
     let _ = typing.stop();
 
-    if let Err(e) = msg
-        .channel_id
-        .send_message(&ctx.http, |m| {
-            m.content(full_name).embed(|e| {
-                e.title("BehindTheName").field(
-                    "First Name",
-                    first_name_hyperlink(&first_name),
-                    true,
-                );
-                if let Ok(last_name) = last_name_result {
-                    e.field("Last Name", last_name_hyperlink(&last_name), true);
+    match name {
+        Ok(Name {
+            first_name,
+            last_name_result,
+        }) => {
+            let full_name = format!(
+                "{} {}",
+                first_name.clone(),
+                match last_name_result.clone() {
+                    Ok(last_name) => last_name,
+                    Err(error) => no_last_name(error),
                 }
-                e
-            })
-        })
-        .await
-    {
-        msg.channel_id.say(&ctx.http, format!("{}", &e)).await?;
-        Err(e)?
+            );
+            msg
+                .channel_id
+                .send_message(&ctx.http, |m| {
+                    m.content(full_name).embed(|e| {
+                        e.title("BehindTheName").field(
+                            "First Name",
+                            first_name_hyperlink(&first_name),
+                            true,
+                        );
+                        if let Ok(last_name) = last_name_result {
+                            e.field("Last Name", last_name_hyperlink(&last_name), true);
+                        }
+                        e
+                    })
+                })
+                .await?;
+        }
+        Err(e) => {
+            msg.channel_id
+                .say(&ctx.http, an_error_occurred(e.clone()))
+                .await?;
+            Err(e)?
+        }
     }
 
     Ok(())
