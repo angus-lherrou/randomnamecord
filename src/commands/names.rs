@@ -3,6 +3,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use behindthename::{lookup, random, session::Session, types::RateLimited::*, types::*};
+use itertools::Itertools;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use reqwest::Client;
@@ -13,6 +14,8 @@ use serenity::{builder::CreateMessage, model::prelude::*, prelude::*};
 use tracing::error;
 
 use core::result::Result; // satisfy IntelliJ's erroneous type checking
+
+use crate::resources::usage_maps::*;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -47,31 +50,7 @@ fn last_name_hyperlink(last_name: &str) -> String {
     hyperlink(last_name, &last_name_url(last_name))
 }
 
-fn _name(mut args: Args) -> Result<Name, String> {
-    let key_string = env::var("BTN_API_KEY").unwrap();
-    let key = key_string.as_str();
-    let session = Session::new_default(key);
-
-    let gender = match args.single::<Gender>() {
-        Ok(g) => Ok(g),
-        Err(Parse(_)) => Err("Could not parse gender".to_string()),
-        Err(Eos) => Ok(Gender::Any),
-        Err(_) => Err("some other error".to_string()),
-    }?;
-
-    sleep(Duration::from_millis(550));
-
-    let first_name_request = random::random_with_gender(gender);
-    let first_name = match session.request(first_name_request) {
-        Allowed(JsonResponse::NameList(JsonNameList { names })) => {
-            Ok(names.first().unwrap().to_owned())
-        }
-        Allowed(_) => Err("At first name request: parsing issue".into()),
-        Limited(l) => Err(format!("At first name request: {:?}", l)),
-        Governed(_, _) => Err("At first name request: governed".into()),
-        Error(e) => Err(format!("At first name request: {}", e)),
-    }?;
-
+fn _surname(session: Session, gender: Gender, first_name: String) -> Result<Name, String> {
     sleep(Duration::from_millis(550));
 
     let usage_request = lookup::lookup(first_name.as_str());
@@ -80,6 +59,7 @@ fn _name(mut args: Args) -> Result<Name, String> {
         Allowed(JsonResponse::NameDetails(JsonNameDetails(details))) => Ok(details
             .into_iter()
             .flat_map(|item| item.usages)
+            .unique()
             .collect::<Vec<_>>()),
         Allowed(_) => Err("At usage request: parsing issue".into()),
         Failed(e) => Err(format!("At usage request: {:?}", e)),
@@ -92,7 +72,37 @@ fn _name(mut args: Args) -> Result<Name, String> {
         usages
     });
 
-    let last_name_result = possible_usages_shuffled.and_then(|usages| {
+    let mut usage_augment = possible_usages_shuffled
+        .as_ref()
+        .map(|usages| {
+            usages
+                .iter()
+                .filter(|usage| USAGE_REGEX.is_match(&usage.usage_code))
+                .map(|usage| {
+                    let mut new_usage_code = None;
+                    for (pat, repl) in USAGE_MAP.iter() {
+                        if pat.is_match(&usage.usage_code) {
+                            new_usage_code =
+                                Some(pat.replace(&usage.usage_code, repl.to_string()).to_string());
+                            break;
+                        }
+                    }
+                    Usage {
+                        usage_code: new_usage_code.unwrap(),
+                        usage_full: usage.usage_full.clone(),
+                        usage_gender: usage.usage_gender,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let possible_usages_augmented = possible_usages_shuffled.map(|mut usages| {
+        usages.append(&mut usage_augment);
+        usages
+    });
+
+    let last_name_result = possible_usages_augmented.and_then(|usages| {
         let mut errs_acc = vec![];
         let mut result = Err(format!("{} Usages", usages.len()));
         for usage in usages {
@@ -149,6 +159,54 @@ fn _name(mut args: Args) -> Result<Name, String> {
     })
 }
 
+fn _name(mut args: Args) -> Result<Name, String> {
+    let key_string = env::var("BTN_API_KEY").unwrap();
+    let key = key_string.as_str();
+    let session = Session::new_default(key);
+
+    let gender = match args.single::<Gender>() {
+        Ok(g) => Ok(g),
+        Err(Parse(_)) => Err("Could not parse gender".to_string()),
+        Err(Eos) => Ok(Gender::Any),
+        Err(_) => Err("some other error".to_string()),
+    }?;
+
+    sleep(Duration::from_millis(550));
+
+    let first_name_request = random::random_with_gender(gender);
+    let first_name = match session.request(first_name_request) {
+        Allowed(JsonResponse::NameList(JsonNameList { names })) => {
+            Ok(names.first().unwrap().to_owned())
+        }
+        Allowed(_) => Err("At first name request: parsing issue".into()),
+        Failed(e) => Err(format!("At first name request: {:?}", e)),
+        Governed(_, _) => Err("At first name request: governed".into()),
+        ReqwestError(e) => Err(format!("At first name request: {}", e)),
+    }?;
+
+    _surname(session, gender, first_name)
+}
+
+fn _dbg_name(mut args: Args) -> Result<Name, String> {
+    let key_string = env::var("BTN_API_KEY").unwrap();
+    let key = key_string.as_str();
+    let session = Session::new_default(key);
+
+    let first_name = match args.single::<String>() {
+        Ok(g) => Ok(g),
+        Err(_) => Err("some other error".to_string()),
+    }?;
+
+    let gender = match args.single::<Gender>() {
+        Ok(g) => Ok(g),
+        Err(Parse(_)) => Err("Could not parse gender".to_string()),
+        Err(Eos) => Ok(Gender::Any),
+        Err(_) => Err("some other error".to_string()),
+    }?;
+
+    _surname(session, gender, first_name)
+}
+
 fn no_last_name(err: String) -> String {
     format!(
         "
@@ -174,6 +232,54 @@ pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     let typing = msg.channel_id.start_typing(&ctx.http)?;
 
     let name = tokio::task::spawn_blocking(move || _name(args)).await?;
+
+    let _ = typing.stop();
+
+    match name {
+        Ok(Name {
+            first_name,
+            last_name_result,
+        }) => {
+            let full_name = format!(
+                "{} {}",
+                first_name.clone(),
+                match last_name_result.clone() {
+                    Ok(last_name) => last_name,
+                    Err(error) => no_last_name(error),
+                }
+            );
+            msg.channel_id
+                .send_message(&ctx.http, |m| {
+                    m.content(full_name).embed(|e| {
+                        e.title("BehindTheName").field(
+                            "First Name",
+                            first_name_hyperlink(&first_name),
+                            true,
+                        );
+                        if let Ok(last_name) = last_name_result {
+                            e.field("Last Name", last_name_hyperlink(&last_name), true);
+                        }
+                        e
+                    })
+                })
+                .await?;
+        }
+        Err(e) => {
+            msg.channel_id
+                .say(&ctx.http, an_error_occurred(e.clone()))
+                .await?;
+            Err(e)?
+        }
+    }
+
+    Ok(())
+}
+
+#[command]
+pub async fn debug_name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
+    let typing = msg.channel_id.start_typing(&ctx.http)?;
+
+    let name = tokio::task::spawn_blocking(move || _dbg_name(args)).await?;
 
     let _ = typing.stop();
 

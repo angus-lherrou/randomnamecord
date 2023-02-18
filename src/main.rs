@@ -9,6 +9,7 @@
 //! features = ["framework", "standard_framework"]
 //! ```
 mod commands;
+mod resources;
 
 use commands::names::*;
 use serenity::{
@@ -34,7 +35,7 @@ impl EventHandler for Handler {
 }
 
 #[group]
-#[commands(name, about, help)]
+#[commands(name, debug_name, about, help)]
 struct General;
 
 #[tokio::main]

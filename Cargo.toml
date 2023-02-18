@@ -13,7 +13,10 @@ readme = "README.md"
 [dependencies]
 behindthename = "0.3.0"
 dotenv = "0.15"
+itertools = "0.10"
 rand = "0.8.5"
+regex = "1.7"
+lazy_static = "1.4"
 reqwest = "0.11.14"
 serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.68"
