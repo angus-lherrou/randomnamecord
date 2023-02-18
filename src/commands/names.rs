@@ -3,7 +3,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use behindthename::{lookup, random, session::Session, types::RateLimited::*, types::*};
-use rand::seq::IteratorRandom;
+use rand::seq::SliceRandom;
 use rand::thread_rng;
 use reqwest::Client;
 use serenity::framework::standard::{
@@ -75,35 +75,75 @@ fn _name(mut args: Args) -> Result<Name, String> {
     sleep(Duration::from_millis(550));
 
     let usage_request = lookup::lookup(first_name.as_str());
-    let usage = match session.request(usage_request) {
-        Allowed(JsonResponse::NameDetails(JsonNameDetails(details))) => details
-            .into_iter()
-            .next()
-            .and_then(|first| first.usages.into_iter().choose(&mut thread_rng()))
-            .ok_or_else(|| "No Usage".into()),
+
+    let possible_usages = match session.request(usage_request) {
+        Allowed(JsonResponse::NameDetails(JsonNameDetails(details))) => Ok(
+            details
+                .into_iter()
+                .map(|item| item.usages)
+                .flatten()
+                .collect::<Vec<_>>()
+        ),
         Allowed(_) => Err("At usage request: parsing issue".into()),
         Limited(l) => Err(format!("At usage request: {:?}", l)),
         Governed(_, _) => Err("At usage request: governed".into()),
         Error(e) => Err(format!("At usage request: {}", e)),
     };
 
-    sleep(Duration::from_millis(550));
+    let possible_usages_shuffled = possible_usages.and_then(
+        |mut usages| {
+            usages.shuffle(&mut thread_rng());
+            Ok(usages)
+        }
+    );
 
-    let last_name_result = usage.and_then(|u| {
-        let last_name_gender = match gender {
-            Gender::Any => u.usage_gender,
-            _ => gender,
-        };
-        let last_name_request =
-            random::random_with_params(last_name_gender, Some(&*u.usage_code), Some(1), true);
-        match session.request(last_name_request) {
-            Allowed(JsonResponse::NameList(JsonNameList { names })) => {
-                Ok(names.last().unwrap().to_owned())
+    let last_name_result = possible_usages_shuffled.and_then(|usages| {
+        let mut errs_acc = vec!();
+        let mut result = Err("No Usage".into());
+        for usage in usages {
+            sleep(Duration::from_millis(550));
+
+            let last_name_gender = match gender {
+                Gender::Any => usage.usage_gender,
+                _ => gender,
+            };
+            let last_name_request =
+                random::random_with_params(last_name_gender, Some(&*usage.usage_code), Some(1), true);
+            let matched = match session.request(last_name_request) {
+                Allowed(JsonResponse::NameList(JsonNameList { names })) => {
+                    Ok(Ok(names.last().unwrap().to_owned()))
+                }
+                Allowed(_) => Err("At last name request: parsing error".into()),
+                Limited(NotAvailable { error_code: 60, .. }) => { Ok(Err(())) }
+                Limited(l) => {
+                    Err(format!("At last name request for usage {:?}: {:?}", usage, l))
+                }
+                Governed(_, _) => Err("At last name request: governed".into()),
+                Error(e) => Err(format!("At last name request: {}", e)),
+            };
+            match matched {
+                Ok(Ok(name)) => {
+                    result = Ok(name);
+                    break
+                }
+                Ok(Err(())) => continue,
+                Err(e) => {
+                    errs_acc.push(e)
+                }
             }
-            Allowed(_) => Err("At last name request: parsing error".into()),
-            Limited(l) => Err(format!("At last name request for usage {:?}: {:?}", u, l)),
-            Governed(_, _) => Err("At last name request: governed".into()),
-            Error(e) => Err(format!("At last name request: {}", e)),
+        };
+        match result {
+            Ok(r) => {
+                if !errs_acc.is_empty() {
+                    println!("SOME_ERRORS");
+                    println!("{}", errs_acc.join("\n"));
+                }
+                Ok(r)
+            }
+            Err(e) => match errs_acc.len() {
+                0 => Err(e),
+                _ => Err(errs_acc.join("\n"))
+            }
         }
     });
 
