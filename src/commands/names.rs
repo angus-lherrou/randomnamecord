@@ -77,28 +77,24 @@ fn _name(mut args: Args) -> Result<Name, String> {
     let usage_request = lookup::lookup(first_name.as_str());
 
     let possible_usages = match session.request(usage_request) {
-        Allowed(JsonResponse::NameDetails(JsonNameDetails(details))) => Ok(
-            details
-                .into_iter()
-                .map(|item| item.usages)
-                .flatten()
-                .collect::<Vec<_>>()
-        ),
+        Allowed(JsonResponse::NameDetails(JsonNameDetails(details))) => Ok(details
+            .into_iter()
+            .map(|item| item.usages)
+            .flatten()
+            .collect::<Vec<_>>()),
         Allowed(_) => Err("At usage request: parsing issue".into()),
         Limited(l) => Err(format!("At usage request: {:?}", l)),
         Governed(_, _) => Err("At usage request: governed".into()),
         Error(e) => Err(format!("At usage request: {}", e)),
     };
 
-    let possible_usages_shuffled = possible_usages.and_then(
-        |mut usages| {
-            usages.shuffle(&mut thread_rng());
-            Ok(usages)
-        }
-    );
+    let possible_usages_shuffled = possible_usages.and_then(|mut usages| {
+        usages.shuffle(&mut thread_rng());
+        Ok(usages)
+    });
 
     let last_name_result = possible_usages_shuffled.and_then(|usages| {
-        let mut errs_acc = vec!();
+        let mut errs_acc = vec![];
         let mut result = Err("No Usage".into());
         for usage in usages {
             sleep(Duration::from_millis(550));
@@ -107,31 +103,34 @@ fn _name(mut args: Args) -> Result<Name, String> {
                 Gender::Any => usage.usage_gender,
                 _ => gender,
             };
-            let last_name_request =
-                random::random_with_params(last_name_gender, Some(&*usage.usage_code), Some(1), true);
+            let last_name_request = random::random_with_params(
+                last_name_gender,
+                Some(&*usage.usage_code),
+                Some(1),
+                true,
+            );
             let matched = match session.request(last_name_request) {
                 Allowed(JsonResponse::NameList(JsonNameList { names })) => {
                     Ok(Ok(names.last().unwrap().to_owned()))
                 }
                 Allowed(_) => Err("At last name request: parsing error".into()),
-                Limited(NotAvailable { error_code: 60, .. }) => { Ok(Err(())) }
-                Limited(l) => {
-                    Err(format!("At last name request for usage {:?}: {:?}", usage, l))
-                }
+                Limited(NotAvailable { error_code: 60, .. }) => Ok(Err(())),
+                Limited(l) => Err(format!(
+                    "At last name request for usage {:?}: {:?}",
+                    usage, l
+                )),
                 Governed(_, _) => Err("At last name request: governed".into()),
                 Error(e) => Err(format!("At last name request: {}", e)),
             };
             match matched {
                 Ok(Ok(name)) => {
                     result = Ok(name);
-                    break
+                    break;
                 }
                 Ok(Err(())) => continue,
-                Err(e) => {
-                    errs_acc.push(e)
-                }
+                Err(e) => errs_acc.push(e),
             }
-        };
+        }
         match result {
             Ok(r) => {
                 if !errs_acc.is_empty() {
@@ -142,8 +141,8 @@ fn _name(mut args: Args) -> Result<Name, String> {
             }
             Err(e) => match errs_acc.len() {
                 0 => Err(e),
-                _ => Err(errs_acc.join("\n"))
-            }
+                _ => Err(errs_acc.join("\n")),
+            },
         }
     });
 
@@ -154,11 +153,14 @@ fn _name(mut args: Args) -> Result<Name, String> {
 }
 
 fn no_last_name(err: String) -> String {
-    format!("
+    format!(
+        "
 
 This name is a mononym. Pretend you're Cher. Or Zeus.
 
-||{}||", err)
+||{}||",
+        err
+    )
 }
 
 fn an_error_occurred(err: String) -> String {
@@ -191,8 +193,7 @@ pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
                     Err(error) => no_last_name(error),
                 }
             );
-            msg
-                .channel_id
+            msg.channel_id
                 .send_message(&ctx.http, |m| {
                     m.content(full_name).embed(|e| {
                         e.title("BehindTheName").field(
@@ -376,7 +377,9 @@ Commands:
   ~name [m|f|mf|u]: generate a name, optionally with a specific gender.
   ~about [name]: find the Behind The Name info pages for the provided name, \
 or for your nickname if no name is provided.
-  ~help: print this help page.", VERSION));
+  ~help: print this help page.",
+        VERSION
+    ));
     let _ = typing.stop();
     msg.channel_id.send_message(&ctx.http, |_| &mut m).await?;
     Ok(())
