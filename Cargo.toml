@@ -22,3 +22,4 @@ reqwest = "0.11.14"
 clap = { version = "4.1.6", features = ["derive"] }
 tokio = { version = "1.15", features = ["signal"] }
 serenity = { version = "0.10", features = ["framework", "standard_framework"] }
+url = "2.2"
