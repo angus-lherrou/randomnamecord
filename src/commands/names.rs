@@ -79,8 +79,7 @@ fn _name(mut args: Args) -> Result<Name, String> {
     let possible_usages = match session.request(usage_request) {
         Allowed(JsonResponse::NameDetails(JsonNameDetails(details))) => Ok(details
             .into_iter()
-            .map(|item| item.usages)
-            .flatten()
+            .flat_map(|item| item.usages)
             .collect::<Vec<_>>()),
         Allowed(_) => Err("At usage request: parsing issue".into()),
         Limited(l) => Err(format!("At usage request: {:?}", l)),
@@ -88,9 +87,9 @@ fn _name(mut args: Args) -> Result<Name, String> {
         Error(e) => Err(format!("At usage request: {}", e)),
     };
 
-    let possible_usages_shuffled = possible_usages.and_then(|mut usages| {
+    let possible_usages_shuffled = possible_usages.map(|mut usages| {
         usages.shuffle(&mut thread_rng());
-        Ok(usages)
+        usages
     });
 
     let last_name_result = possible_usages_shuffled.and_then(|usages| {
@@ -252,10 +251,10 @@ pub async fn _about<'a>(
                 .map_err(|e| format!("1: {:?}, {:?}, {}", &e, e.url(), &url))?
                 .status()
                 .is_success()
-                .then(|| url);
+                .then_some(url);
             let mut m = CreateMessage::default();
             Ok(match url_opt {
-                Some(url) => m.content(&first).embed(|e| {
+                Some(url) => m.content(first).embed(|e| {
                     e.title("BehindTheName")
                         .field("First Name", hyperlink(first, &url), true)
                 }),
@@ -266,7 +265,7 @@ pub async fn _about<'a>(
         _ => {
             let last = names.last().unwrap();
             let mut urls: Vec<Option<String>> = vec![];
-            for name in (&names[..names.len() - 1]).iter() {
+            for name in names[..names.len() - 1].iter() {
                 let url = first_name_url(name);
                 let status = clx
                     .head(&url)
@@ -274,7 +273,7 @@ pub async fn _about<'a>(
                     .await
                     .map_err(|e| format!("2: {:?}, {:?}, {}", &e, e.url(), &url))?
                     .status();
-                urls.push(status.is_success().then(|| url));
+                urls.push(status.is_success().then_some(url));
             }
 
             let last_url = last_name_url(last);
@@ -285,7 +284,7 @@ pub async fn _about<'a>(
                 .map_err(|e| format!("3: {:?}, {:?}, {}", &e, e.url(), &last_url))?
                 .status()
                 .is_success()
-                .then(|| last_url)
+                .then_some(last_url)
                 .or(async {
                     let last_first_url = first_name_url(last);
                     clx.head(&last_first_url)
@@ -294,13 +293,13 @@ pub async fn _about<'a>(
                         .ok()?
                         .status()
                         .is_success()
-                        .then(|| last_first_url)
+                        .then_some(last_first_url)
                 }
                 .await);
 
             urls.push(last_url_opt);
 
-            let names_and_urls = (&names).iter().zip(&urls);
+            let names_and_urls = names.iter().zip(&urls);
 
             let mut final_urls: Vec<(&str, &String)> = names_and_urls
                 .filter_map(|(n, u)| u.as_ref().map(|v| (*n, v)))
