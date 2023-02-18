@@ -179,7 +179,7 @@ pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
         }
     );
 
-    typing.stop();
+    let _ = typing.stop();
 
     if let Err(e) = msg
         .channel_id
@@ -338,7 +338,7 @@ pub async fn _about<'a>(
 pub async fn about(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     let typing = msg.channel_id.start_typing(&ctx.http)?;
     let r = _about(ctx, msg, args).await;
-    typing.stop();
+    let _ = typing.stop();
     match r {
         Ok(mut m) => {
             msg.channel_id.send_message(&ctx.http, |_| &mut m).await?;
