@@ -14,6 +14,8 @@ use tracing::error;
 
 use core::result::Result; // satisfy IntelliJ's erroneous type checking
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 struct Name {
     first_name: String,
     last_name_result: Result<String, String>,
@@ -307,4 +309,21 @@ pub async fn about(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
             Ok(())
         }
     }
+}
+
+#[command]
+pub async fn help(ctx: &Context, msg: &Message, _: Args) -> CommandResult {
+    let typing = msg.channel_id.start_typing(&ctx.http)?;
+    let mut m = CreateMessage::default();
+    m.content(format!(
+        "\
+randomnamecord version {}
+Commands:
+  ~name [m|f|mf|u]: generate a name, optionally with a specific gender.
+  ~about [name]: find the Behind The Name info pages for the provided name, \
+or for your nickname if no name is provided.
+  ~help: print this help page.", VERSION));
+    let _ = typing.stop();
+    msg.channel_id.send_message(&ctx.http, |_| &mut m).await?;
+    Ok(())
 }

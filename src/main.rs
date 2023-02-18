@@ -34,7 +34,7 @@ impl EventHandler for Handler {
 }
 
 #[group]
-#[commands(name, about)]
+#[commands(name, about, help)]
 struct General;
 
 #[tokio::main]
