@@ -56,7 +56,9 @@ async fn main() {
         .configure(|c| c.prefix("~"))
         .group(&GENERAL_GROUP);
 
-    let mut client = Client::builder(&token)
+    let gateway_intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
+
+    let mut client = Client::builder(&token, gateway_intents)
         .framework(framework)
         .event_handler(Handler)
         .await
