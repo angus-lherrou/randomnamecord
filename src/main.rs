@@ -1,42 +1,11 @@
-//! Requires the 'framework' feature flag be enabled in your project's
-//! `Cargo.toml`.
-//!
-//! This can be enabled by specifying the feature in the dependency section:
-//!
-//! ```toml
-//! [dependencies.serenity]
-//! git = "https://github.com/serenity-rs/serenity.git"
-//! features = ["framework", "standard_framework"]
-//! ```
 mod commands;
 mod resources;
 
-use commands::names::*;
-use serenity::{
-    async_trait,
-    framework::{standard::macros::group, StandardFramework},
-    model::{event::ResumedEvent, gateway::Ready},
-    prelude::*,
-};
+use poise::serenity_prelude::GatewayIntents;
 use std::env;
-use tracing::{error, info};
 
-struct Handler;
-
-#[async_trait]
-impl EventHandler for Handler {
-    async fn ready(&self, _: Context, ready: Ready) {
-        info!("Connected as {}", ready.user.name);
-    }
-
-    async fn resume(&self, _: Context, _: ResumedEvent) {
-        info!("Resumed");
-    }
-}
-
-#[group]
-#[commands(name, debug_name, about, help)]
-struct General;
+use crate::commands::names::{about_name, debug_name, help_rnc, name};
+use crate::resources::types::Data;
 
 #[tokio::main]
 async fn main() {
@@ -52,29 +21,25 @@ async fn main() {
 
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
-    // Create the framework
-    let framework = StandardFramework::new()
-        .configure(|c| c.prefix("~"))
-        .group(&GENERAL_GROUP);
-
     let gateway_intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
 
-    let mut client = Client::builder(&token, gateway_intents)
-        .framework(framework)
-        .event_handler(Handler)
-        .await
-        .expect("Err creating client");
+    let framework = poise::Framework::builder()
+        .options(poise::FrameworkOptions {
+            commands: vec![name(), debug_name(), about_name(), help_rnc()],
+            prefix_options: poise::PrefixFrameworkOptions {
+                prefix: Some("~".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .token(token)
+        .intents(gateway_intents)
+        .setup(|ctx, _ready, framework| {
+            Box::pin(async move {
+                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                Ok(Data {})
+            })
+        });
 
-    let shard_manager = client.shard_manager.clone();
-
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Could not register ctrl+c handler");
-        shard_manager.lock().await.shutdown_all().await;
-    });
-
-    if let Err(why) = client.start().await {
-        error!("Client error: {:?}", why);
-    }
+    framework.run().await.unwrap();
 }

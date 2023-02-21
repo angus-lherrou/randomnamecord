@@ -1,6 +1,6 @@
 [package]
 name = "randomnamecord"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "Discord app for random BehindTheName names"
@@ -11,17 +11,19 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+aho-corasick = "0.7.20"
 behindthename = "0.3.0"
 dotenv = "0.15"
 itertools = "0.10"
 rand = "0.8.5"
 regex = "1.7"
 lazy_static = "1.4"
+poise = "0.5"
 reqwest = "0.11.14"
 serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.68"
-serenity = { version = "0.11", features = ["framework", "standard_framework"] }
 tokio = { version = "1.15", features = ["signal"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
+unicode-normalization = "0.1.22"
 url = "2.2"

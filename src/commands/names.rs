@@ -7,15 +7,12 @@ use itertools::Itertools;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use reqwest::Client;
-use serenity::framework::standard::{
-    macros::command, ArgError::*, Args, CommandError, CommandResult,
-};
-use serenity::{builder::CreateMessage, model::prelude::*, prelude::*};
-use tracing::error;
+use unicode_normalization::UnicodeNormalization;
 
-use core::result::Result; // satisfy IntelliJ's erroneous type checking
+use poise::serenity_prelude::CacheHttp;
 
-use crate::resources::usage_maps::*;
+use crate::resources::maps::*;
+use crate::resources::types::*;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -28,17 +25,23 @@ fn hyperlink(title: &str, url: &str) -> String {
     format!("[{}]({})", title, url)
 }
 
+fn lower_normalize(name: &str) -> String {
+    let nfc_name = name.to_lowercase().nfc().to_string();
+
+    NORM_AC.replace_all(&nfc_name, &NORM_CODES)
+}
+
 fn first_name_url(first_name: &str) -> String {
     format!(
         "https://www.behindthename.com/name/{}",
-        first_name.to_lowercase()
+        lower_normalize(first_name)
     )
 }
 
 fn last_name_url(last_name: &str) -> String {
     format!(
         "https://surnames.behindthename.com/name/{}",
-        last_name.to_lowercase()
+        lower_normalize(last_name)
     )
 }
 
@@ -89,8 +92,7 @@ fn _surname(session: Session, gender: Gender, first_name: String) -> Result<Name
                     }
                     Usage {
                         usage_code: new_usage_code.unwrap(),
-                        usage_full: usage.usage_full.clone(),
-                        usage_gender: usage.usage_gender,
+                        ..usage.clone()
                     }
                 })
                 .collect::<Vec<_>>()
@@ -159,50 +161,62 @@ fn _surname(session: Session, gender: Gender, first_name: String) -> Result<Name
     })
 }
 
-fn _name(mut args: Args) -> Result<Name, String> {
+fn _name(gender_opt: Option<Gender>, mode_opt: Option<GenMode>) -> Result<Name, String> {
     let key_string = env::var("BTN_API_KEY").unwrap();
     let key = key_string.as_str();
     let session = Session::new_default(key);
 
-    let gender = match args.single::<Gender>() {
-        Ok(g) => Ok(g),
-        Err(Parse(_)) => Err("Could not parse gender".to_string()),
-        Err(Eos) => Ok(Gender::Any),
-        Err(_) => Err("some other error".to_string()),
-    }?;
+    let gender = gender_opt.unwrap_or(Gender::Any);
+
+    let mode = mode_opt.unwrap_or(GenMode::Coherent);
 
     sleep(Duration::from_millis(550));
 
-    let first_name_request = random::random_with_gender(gender);
-    let first_name = match session.request(first_name_request) {
-        Allowed(JsonResponse::NameList(JsonNameList { names })) => {
-            Ok(names.first().unwrap().to_owned())
-        }
-        Allowed(_) => Err("At first name request: parsing issue".into()),
-        Failed(e) => Err(format!("At first name request: {:?}", e)),
-        Governed(_, _) => Err("At first name request: governed".into()),
-        ReqwestError(e) => Err(format!("At first name request: {}", e)),
-    }?;
+    match mode {
+        GenMode::Coherent => {
+            let first_name_request = random::random_with_gender(gender);
+            let first_name = match session.request(first_name_request) {
+                Allowed(JsonResponse::NameList(JsonNameList { names })) => {
+                    Ok(names.first().unwrap().to_owned())
+                }
+                Allowed(_) => Err("At first name request: parsing issue".into()),
+                Failed(e) => Err(format!("At first name request: {:?}", e)),
+                Governed(_, _) => Err("At first name request: governed".into()),
+                ReqwestError(e) => Err(format!("At first name request: {}", e)),
+            }?;
 
-    _surname(session, gender, first_name)
+            _surname(session, gender, first_name)
+        }
+        GenMode::Chaotic => {
+            let name_request = random::random_with_params(gender, None, Some(1), true);
+            let name_vec = match session.request(name_request) {
+                Allowed(JsonResponse::NameList(JsonNameList { names })) => Ok(names),
+                Allowed(_) => Err("At first name request: parsing issue".into()),
+                Failed(e) => Err(format!("At first name request: {:?}", e)),
+                Governed(_, _) => Err("At first name request: governed".into()),
+                ReqwestError(e) => Err(format!("At first name request: {}", e)),
+            }?;
+            match name_vec.len() {
+                1..=2 => Ok(Name {
+                    first_name: name_vec.first().unwrap().to_owned(),
+                    last_name_result: name_vec
+                        .get(1)
+                        .ok_or_else(|| "At last name request: none found?".into())
+                        .cloned(),
+                }),
+                0 => Err("No name fetched".into()),
+                _ => Err("Too many names fetched".into()),
+            }
+        }
+    }
 }
 
-fn _dbg_name(mut args: Args) -> Result<Name, String> {
+fn _dbg_name(first_name: String, gender_opt: Option<Gender>) -> Result<Name, String> {
     let key_string = env::var("BTN_API_KEY").unwrap();
     let key = key_string.as_str();
     let session = Session::new_default(key);
 
-    let first_name = match args.single::<String>() {
-        Ok(g) => Ok(g),
-        Err(_) => Err("some other error".to_string()),
-    }?;
-
-    let gender = match args.single::<Gender>() {
-        Ok(g) => Ok(g),
-        Err(Parse(_)) => Err("Could not parse gender".to_string()),
-        Err(Eos) => Ok(Gender::Any),
-        Err(_) => Err("some other error".to_string()),
-    }?;
+    let gender = gender_opt.unwrap_or(Gender::Any);
 
     _surname(session, gender, first_name)
 }
@@ -227,13 +241,27 @@ fn an_error_occurred(err: String) -> String {
     )
 }
 
-#[command]
-pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
-    let typing = msg.channel_id.start_typing(&ctx.http)?;
+/// Generate a random name, optionally with a specific gender and mode.
+///
+/// Generate a random name, optionally with a specific gender and mode.
+///
+/// The gender options are m, f, u. Passing "u" will generate \
+/// an androgynous name; leaving gender blank will generate \
+/// a name of any gender.
+///
+/// The generation modes are as follows:
+///
+///  * coherent: will attempt to generate a name with a coherent given name and surname.
+///  * chaotic: will generate a given name and surname completely at random.
+#[poise::command(prefix_command, slash_command, broadcast_typing)]
+pub(crate) async fn name(
+    ctx: Context<'_>,
+    #[description = "Gender of name, optional: m|f|u"] gender: Option<Gender>,
+    #[description = "Generation mode, optional: coherent|chaotic"] mode: Option<GenMode>,
+) -> Result<(), Error> {
+    let working_msg = ctx.say("Working...").await?;
 
-    let name = tokio::task::spawn_blocking(move || _name(args)).await?;
-
-    let _ = typing.stop();
+    let name = tokio::task::spawn_blocking(move || _name(gender, mode)).await?;
 
     match name {
         Ok(Name {
@@ -248,8 +276,8 @@ pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
                     Err(error) => no_last_name(error),
                 }
             );
-            msg.channel_id
-                .send_message(&ctx.http, |m| {
+            working_msg
+                .edit(ctx, |m| {
                     m.content(full_name).embed(|e| {
                         e.title("BehindTheName").field(
                             "First Name",
@@ -265,9 +293,7 @@ pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
                 .await?;
         }
         Err(e) => {
-            msg.channel_id
-                .say(&ctx.http, an_error_occurred(e.clone()))
-                .await?;
+            ctx.say(an_error_occurred(e.clone())).await?;
             Err(e)?
         }
     }
@@ -275,13 +301,18 @@ pub async fn name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     Ok(())
 }
 
-#[command]
-pub async fn debug_name(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
-    let typing = msg.channel_id.start_typing(&ctx.http)?;
+/// Generate a random name.
+///
+/// Debug command; please ignore.
+#[poise::command(prefix_command, slash_command, broadcast_typing, hide_in_help)]
+pub(crate) async fn debug_name(
+    ctx: Context<'_>,
+    #[description = "First name"] first_name: String,
+    #[description = "Gender of name"] gender: Option<Gender>,
+) -> Result<(), Error> {
+    let working_msg = ctx.say("Working...").await?;
 
-    let name = tokio::task::spawn_blocking(move || _dbg_name(args)).await?;
-
-    let _ = typing.stop();
+    let name = tokio::task::spawn_blocking(move || _dbg_name(first_name, gender)).await?;
 
     match name {
         Ok(Name {
@@ -296,8 +327,8 @@ pub async fn debug_name(ctx: &Context, msg: &Message, args: Args) -> CommandResu
                     Err(error) => no_last_name(error),
                 }
             );
-            msg.channel_id
-                .send_message(&ctx.http, |m| {
+            working_msg
+                .edit(ctx, |m| {
                     m.content(full_name).embed(|e| {
                         e.title("BehindTheName").field(
                             "First Name",
@@ -313,9 +344,7 @@ pub async fn debug_name(ctx: &Context, msg: &Message, args: Args) -> CommandResu
                 .await?;
         }
         Err(e) => {
-            msg.channel_id
-                .say(&ctx.http, an_error_occurred(e.clone()))
-                .await?;
+            ctx.say(an_error_occurred(e.clone())).await?;
             Err(e)?
         }
     }
@@ -323,32 +352,43 @@ pub async fn debug_name(ctx: &Context, msg: &Message, args: Args) -> CommandResu
     Ok(())
 }
 
-pub async fn _about<'a>(
-    ctx: &'a Context,
-    msg: &'a Message,
-    args: Args,
-) -> Result<CreateMessage<'a>, CommandError> {
-    let nick_opt = msg.author_nick(&ctx.http).await;
-    let raw_args = args.raw().collect::<Vec<&str>>();
-    let names = if !raw_args.is_empty() {
-        raw_args
+async fn get_name_vector(ctx: Context<'_>, name: Option<String>) -> Vec<String> {
+    let nick_opt = ctx
+        .author()
+        .nick_in(ctx.http(), ctx.guild_id().unwrap())
+        .await;
+
+    if let Some(n) = &name {
+        n.split_whitespace().map(|s| s.to_owned()).collect()
     } else if let Some(nick) = &nick_opt {
-        nick.split_whitespace().collect()
+        nick.split_whitespace().map(|s| s.to_owned()).collect()
     } else {
         vec![]
-    };
+    }
+}
 
-    let clx = Client::new();
+struct MessageContent {
+    content: String,
+    embed: Option<MessageEmbed>,
+}
 
-    match names.len() {
-        0 => {
-            let mut m = CreateMessage::default();
-            Ok(m.content("No name found").to_owned())
-        }
+struct MessageEmbed {
+    title: String,
+    fields: Vec<(String, String, bool)>,
+}
+
+async fn _about<'att>(names: Vec<String>) -> Result<MessageContent, Error> {
+    let clt = Client::new();
+
+    Ok(match names.len() {
+        0 => MessageContent {
+            content: "No name found".into(),
+            embed: None,
+        },
         1 => {
             let first = names.first().unwrap();
             let url = first_name_url(first);
-            let url_opt = clx
+            let url_opt = clt
                 .head(&url)
                 .send()
                 .await
@@ -356,22 +396,26 @@ pub async fn _about<'a>(
                 .status()
                 .is_success()
                 .then_some(url);
-            let mut m = CreateMessage::default();
-            Ok(match url_opt {
-                Some(url) => m.content(first).embed(|e| {
-                    e.title("BehindTheName")
-                        .field("First Name", hyperlink(first, &url), true)
-                }),
-                None => m.content(format!("Name {} not found.", first)),
+            match url_opt {
+                Some(url) => MessageContent {
+                    content: first.into(),
+                    embed: Some(MessageEmbed {
+                        title: "BehindTheName".into(),
+                        fields: vec![("First Name".into(), hyperlink(first, &url), true)],
+                    }),
+                },
+                None => MessageContent {
+                    content: format!("Name {} not found.", first),
+                    embed: None,
+                },
             }
-            .to_owned())
         }
         _ => {
             let last = names.last().unwrap();
             let mut urls: Vec<Option<String>> = vec![];
             for name in names[..names.len() - 1].iter() {
                 let url = first_name_url(name);
-                let status = clx
+                let status = clt
                     .head(&url)
                     .send()
                     .await
@@ -381,7 +425,7 @@ pub async fn _about<'a>(
             }
 
             let last_url = last_name_url(last);
-            let last_url_opt = clx
+            let last_url_opt = clt
                 .head(&last_url)
                 .send()
                 .await
@@ -391,7 +435,7 @@ pub async fn _about<'a>(
                 .then_some(last_url)
                 .or(async {
                     let last_first_url = first_name_url(last);
-                    clx.head(&last_first_url)
+                    clt.head(&last_first_url)
                         .send()
                         .await
                         .ok()?
@@ -405,85 +449,117 @@ pub async fn _about<'a>(
 
             let names_and_urls = names.iter().zip(&urls);
 
-            let mut final_urls: Vec<(&str, &String)> = names_and_urls
-                .filter_map(|(n, u)| u.as_ref().map(|v| (*n, v)))
+            let mut final_urls: Vec<(&String, &String)> = names_and_urls
+                .filter_map(|(n, u)| u.as_ref().map(|v| (n, v)))
                 .collect();
 
             match final_urls.len() {
-                0 => {
-                    let mut m = CreateMessage::default();
-                    Ok(m.content("No names found.").to_owned())
-                }
+                0 => MessageContent {
+                    content: "No names found.".into(),
+                    embed: None,
+                },
                 1 => {
-                    let mut m = CreateMessage::default();
                     let (name, url) = final_urls.pop().unwrap();
-                    Ok(m.content(names.join(" "))
-                        .embed(|e| {
-                            e.title("BehindTheName")
-                                .field("First Name", hyperlink(name, url), true)
-                        })
-                        .to_owned())
+                    MessageContent {
+                        content: names.join(" "),
+                        embed: Some(MessageEmbed {
+                            title: "BehindTheName".into(),
+                            fields: vec![("First Name".into(), hyperlink(name, url), true)],
+                        }),
+                    }
                 }
                 _ => {
-                    let mut m = CreateMessage::default();
-                    Ok(m.content(names.join(" "))
-                        .embed(|e| {
-                            let (last_name, last_url) = final_urls.pop().unwrap();
+                    let (last_name, last_url) = final_urls.pop().unwrap();
+                    let mut url_iter = final_urls.into_iter();
+                    let (first_name, first_url) = url_iter.next().unwrap();
 
-                            let mut url_iter = final_urls.into_iter();
-                            let (first_name, first_url) = url_iter.next().unwrap();
-                            e.title("BehindTheName").field(
-                                "First Name",
-                                hyperlink(first_name, first_url),
-                                true,
-                            );
+                    let mut fields = vec![];
 
-                            for (name, url) in url_iter {
-                                e.field("Middle Name", hyperlink(name, url), true);
-                            }
+                    fields.push(("First Name".into(), hyperlink(first_name, first_url), true));
 
-                            e.field("Last Name", hyperlink(last_name, last_url), true);
-                            e
-                        })
-                        .to_owned())
+                    for (name, url) in url_iter {
+                        fields.push(("Middle Name".into(), hyperlink(name, url), true));
+                    }
+
+                    fields.push(("Last Name".into(), hyperlink(last_name, last_url), true));
+                    MessageContent {
+                        content: names.join(" "),
+                        embed: Some(MessageEmbed {
+                            title: "BehindTheName".into(),
+                            fields,
+                        }),
+                    }
                 }
             }
         }
-    }
+    })
 }
 
-#[command]
-pub async fn about(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
-    let typing = msg.channel_id.start_typing(&ctx.http)?;
-    let r = _about(ctx, msg, args).await;
-    let _ = typing.stop();
-    match r {
-        Ok(mut m) => {
-            msg.channel_id.send_message(&ctx.http, |_| &mut m).await?;
-            Ok(())
-        }
-        Err(e) => {
-            error!("{:?}", e);
-            Ok(())
-        }
-    }
+/// Get details about your nickname or a specific name.
+///
+/// Get details about your nickname or a specific name.
+///
+/// With no arguments, this will attempt to look up your \
+/// Discord nickname on BehindTheName.
+///
+/// With an argument, this will attempt to look up the name \
+/// you passed on BehindTheName.
+///
+/// For first or last names that contain spaces, this is \
+/// currently slightly broken. You can get around this \
+/// by replacing the spaces with "00", e.g.:
+///
+/// `/about_name Mary00Ann Van00Buren`
+#[poise::command(prefix_command, slash_command, broadcast_typing, ephemeral)]
+pub(crate) async fn about_name(
+    ctx: Context<'_>,
+    #[description = "Specific name"] name: Option<String>,
+) -> Result<(), Error> {
+    let working_msg = ctx.say("Working...").await?;
+
+    let name_vector = get_name_vector(ctx, name).await;
+
+    let message_content = _about(name_vector).await?;
+
+    working_msg
+        .edit(ctx, |m| {
+            m.content(message_content.content);
+            if let Some(MessageEmbed {
+                title: t,
+                fields: f,
+            }) = message_content.embed
+            {
+                m.embed(|e| {
+                    e.title(t);
+                    e.fields(f);
+                    e
+                });
+            }
+            m
+        })
+        .await?;
+
+    Ok(())
 }
 
-#[command]
-pub async fn help(ctx: &Context, msg: &Message, _: Args) -> CommandResult {
-    let typing = msg.channel_id.start_typing(&ctx.http)?;
-    let mut m = CreateMessage::default();
-    m.content(format!(
+/// Show this menu
+#[poise::command(prefix_command, track_edits, slash_command, ephemeral)]
+pub(crate) async fn help_rnc(
+    ctx: Context<'_>,
+    #[description = "Specific command to show help about"] command: Option<String>,
+) -> Result<(), Error> {
+    let extra_text = format!(
         "\
 randomnamecord version {}
-Commands:
-  ~name [m|f|mf|u]: generate a name, optionally with a specific gender.
-  ~about [name]: find the Behind The Name info pages for the provided name, \
-or for your nickname if no name is provided.
-  ~help: print this help page.",
+
+Type ~help_rnc command or /help_rnc command for more info on a command.
+You can edit your message to the bot and the bot will edit its response.",
         VERSION
-    ));
-    let _ = typing.stop();
-    msg.channel_id.send_message(&ctx.http, |_| &mut m).await?;
+    );
+    let config = poise::builtins::HelpConfiguration {
+        extra_text_at_bottom: &extra_text,
+        ..Default::default()
+    };
+    poise::builtins::help(ctx, command.as_deref(), config).await?;
     Ok(())
 }
