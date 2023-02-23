@@ -1,6 +1,12 @@
 # randomnamecord
 Discord app for random BehindTheName names
 
+## Build requirements
+
+This is a non-exhaustive list found by trial and error:
+
+* `openssl` and `libssl-dev` should be installed.
+
 ## Usage
 
 Commands:
